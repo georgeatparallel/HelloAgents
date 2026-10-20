@@ -293,3 +293,35 @@ async def test_model_cannot_choose_conversation_identity(mcp_http):
     identity = outgoing(requests)[0]["arguments"]["session_id"]
     assert identity == agent._session_metadata["parallel_search_session_id"]
     UUID(identity)
+
+
+@pytest.mark.asyncio
+async def test_isolated_subagent_runs_restore_parent_search_identity(mcp_http):
+    requests, _ = mcp_http
+    model = ScriptedModel(
+        [
+            search(),
+            None,
+            search("child1"),
+            fetch(),
+            None,
+            search("child2"),
+            None,
+            search("parent-followup"),
+            None,
+        ]
+    )
+    agent = ReActAgent("parent", model)
+    await agent.arun("Parent research")
+    first = await asyncio.to_thread(
+        agent.run_as_subagent, "Child one", return_summary=False
+    )
+    second = await asyncio.to_thread(
+        agent.run_as_subagent, "Child two", return_summary=False
+    )
+    assert first["success"] and second["success"]
+    await agent.arun("Parent follow-up")
+    identities = [c["arguments"]["session_id"] for c in outgoing(requests)]
+    assert identities[0] == identities[4]
+    assert identities[1] == identities[2]
+    assert len({identities[0], identities[1], identities[3]}) == 3
