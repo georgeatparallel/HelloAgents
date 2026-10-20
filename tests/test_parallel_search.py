@@ -249,7 +249,7 @@ async def test_timeout_and_cancellation_close_actual_transport(mcp_http):
     agent = ReActAgent(
         "timeout",
         ScriptedModel([search(), None]),
-        config=Config(tool_async_timeout=0.1),
+        config=Config(tool_async_timeout=2),
     )
     with pytest.raises(TimeoutError):
         await agent.arun("Search")
@@ -325,3 +325,41 @@ async def test_isolated_subagent_runs_restore_parent_search_identity(mcp_http):
     assert identities[0] == identities[4]
     assert identities[1] == identities[2]
     assert len({identities[0], identities[1], identities[3]}) == 3
+
+
+def test_direct_sync_registry_call_is_standalone_research(mcp_http):
+    requests, _ = mcp_http
+    registry = ToolRegistry()
+    registry.register_tool(parallel_search.ParallelWebTool())
+    args = {"objective": "Find a source", "search_queries": ["example source"]}
+    assert registry.execute_tool("WebSearch", args).status.value == "success"
+    assert registry.execute_tool("WebSearch", args).status.value == "success"
+    calls = outgoing(requests)
+    assert calls[0]["arguments"]["session_id"] != calls[1]["arguments"]["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_search_and_fetch_objective_never_send_requests(mcp_http):
+    requests, _ = mcp_http
+    search_tool = parallel_search.ParallelWebTool()
+    fetch_tool = parallel_search.ParallelWebTool(fetch=True)
+    bad_search = await search_tool.arun(
+        {"objective": "Find a source", "search_queries": []}
+    )
+    bad_fetch = await fetch_tool.arun(
+        {"urls": ["https://example.org"], "objective": "x" * 201}
+    )
+    assert (
+        bad_search.error_info["code"] == bad_fetch.error_info["code"] == "INVALID_PARAM"
+    )
+    assert not requests
+
+
+@pytest.mark.asyncio
+async def test_missing_optional_sdk_reports_documented_installation_hint(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", None)
+    agent = ReActAgent("minimal", ScriptedModel([search(), None]))
+    await agent.arun("Search")
+    assert "Install hello-agents[mcp]" in agent.llm.messages[-1][-1]["content"]
